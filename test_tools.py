@@ -5,14 +5,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import tools
 from tools import (
     analyze_project,
     check_project_path_access,
     get_blocklist_status,
+    get_github_repo_info,
+    get_public_github_repo_info,
     get_run_candidates,
+    list_github_repo_files,
     list_project_files,
     list_project_files_local,
+    list_public_github_repo_files,
+    parse_github_repo_url,
+    read_github_repo_file,
+    read_github_repo_file_compat,
     read_project_file,
+    read_public_github_repo_file,
     search_project,
 )
 
@@ -54,6 +63,239 @@ class ToolTests(unittest.TestCase):
         result = analyze_project.__wrapped__(str(self.root))
         self.assertIn("项目类型：Python", result)
         self.assertIn("main.py", result)
+
+    def test_parse_github_repo_url(self) -> None:
+        self.assertEqual(
+            parse_github_repo_url(
+                "https://github.com/openai/openai-python"
+            ),
+            ("openai", "openai-python"),
+        )
+
+        self.assertEqual(
+            parse_github_repo_url(
+                "https://github.com/openai/openai-python.git"
+            ),
+            ("openai", "openai-python"),
+        )
+
+        self.assertIsNone(
+            parse_github_repo_url("D:\\GitHub\\repo-learning-agent")
+        )
+
+        self.assertIsNone(
+            parse_github_repo_url("https://github.com/openai")
+        )
+
+        self.assertIsNone(
+            parse_github_repo_url(
+                "https://github.com/openai/openai-python/blob/main/README.md"
+            )
+        )
+
+    def test_get_public_github_repo_info(self) -> None:
+        fake_payload = {
+            "full_name": "openai/openai-python",
+            "description": "OpenAI Python SDK",
+            "default_branch": "main",
+            "language": "Python",
+            "updated_at": "2026-09-18T00:00:00Z",
+            "html_url": "https://github.com/openai/openai-python",
+        }
+
+        with patch("tools.urlopen") as mock_urlopen:
+            fake_response = mock_urlopen.return_value.__enter__.return_value
+            fake_response.read.return_value = json.dumps(
+                fake_payload
+            ).encode("utf-8")
+
+            result = get_public_github_repo_info(
+                "https://github.com/openai/openai-python"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["full_name"], "openai/openai-python")
+        self.assertEqual(result["language"], "Python")
+
+    def test_github_request_uses_optional_token(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}):
+            request = tools._github_request(
+                "https://api.github.com/repos/example/demo",
+                "application/vnd.github+json",
+            )
+
+        self.assertEqual("Bearer test-token", request.get_header("Authorization"))
+        self.assertEqual("2022-11-28", request.get_header("X-github-api-version"))
+
+    def test_get_github_repo_info_formats_result(self) -> None:
+        fake_result = {
+            "ok": True,
+            "owner": "openai",
+            "repo": "openai-python",
+            "full_name": "openai/openai-python",
+            "description": "OpenAI Python SDK",
+            "default_branch": "main",
+            "language": "Python",
+            "updated_at": "2026-09-18T00:00:00Z",
+            "html_url": "https://github.com/openai/openai-python",
+        }
+
+        with patch(
+            "tools.get_public_github_repo_info",
+            return_value=fake_result,
+        ):
+            result = get_github_repo_info.__wrapped__(
+                "https://github.com/openai/openai-python"
+            )
+
+        self.assertIn("openai/openai-python", result)
+        self.assertIn("外部数据", result)
+        self.assertIn("主要语言：Python", result)
+
+    def test_get_public_github_repo_info_rejects_invalid_url(self) -> None:
+        with patch("tools.urlopen") as mock_urlopen:
+            result = get_public_github_repo_info("D:\\GitHub\\demo")
+
+        self.assertFalse(result["ok"])
+        mock_urlopen.assert_not_called()
+
+    def test_get_public_github_repo_info_handles_null_language(self) -> None:
+        fake_payload = {
+            "full_name": "example/docs",
+            "description": None,
+            "default_branch": "main",
+            "language": None,
+            "updated_at": "2026-09-18T00:00:00Z",
+            "html_url": "https://github.com/example/docs",
+        }
+
+        with patch("tools.urlopen") as mock_urlopen:
+            fake_response = mock_urlopen.return_value.__enter__.return_value
+            fake_response.read.return_value = json.dumps(fake_payload).encode("utf-8")
+            result = get_public_github_repo_info(
+                "https://github.com/example/docs"
+            )
+
+        self.assertEqual("", result["description"])
+        self.assertEqual("", result["language"])
+
+    def test_list_public_github_repo_files_filters_sensitive_paths(self) -> None:
+        fake_info = {
+            "ok": True,
+            "owner": "example",
+            "repo": "demo",
+            "default_branch": "main",
+        }
+        fake_tree = {
+            "tree": [
+                {"type": "blob", "path": "README.md"},
+                {"type": "blob", "path": "src/main.py"},
+                {"type": "blob", "path": ".env"},
+                {"type": "blob", "path": "keys/server.pem"},
+                {"type": "blob", "path": "node_modules/pkg/index.js"},
+                {"type": "tree", "path": "src"},
+            ],
+            "truncated": False,
+        }
+
+        with patch(
+            "tools.get_public_github_repo_info",
+            return_value=fake_info,
+        ), patch("tools._github_api_json", return_value=(fake_tree, None)):
+            result = list_public_github_repo_files(
+                "https://github.com/example/demo"
+            )
+
+        self.assertIn("README.md", result)
+        self.assertIn("src/main.py", result)
+        self.assertNotIn(".env", result)
+        self.assertNotIn("server.pem", result)
+        self.assertNotIn("node_modules", result)
+
+    def test_list_github_repo_files_tool_uses_public_reader(self) -> None:
+        with patch(
+            "tools.list_public_github_repo_files",
+            return_value="README.md\nsrc/main.py",
+        ):
+            result = list_github_repo_files.__wrapped__(
+                "https://github.com/example/demo"
+            )
+
+        self.assertIn("README.md", result)
+
+    def test_read_public_github_repo_file_returns_line_numbers(self) -> None:
+        with patch(
+            "tools._github_api_raw",
+            return_value=(b"first line\nsecond line\n", None),
+        ):
+            result = read_public_github_repo_file(
+                "https://github.com/example/demo",
+                "README.md",
+            )
+
+        self.assertIn("GitHub 外部文件", result)
+        self.assertIn("1: first line", result)
+        self.assertIn("2: second line", result)
+
+    def test_read_github_repo_file_tool_uses_public_reader(self) -> None:
+        with patch(
+            "tools.read_public_github_repo_file",
+            return_value="1: demo",
+        ):
+            result = read_github_repo_file.__wrapped__(
+                "https://github.com/example/demo",
+                "README.md",
+            )
+
+        self.assertEqual("1: demo", result)
+
+    def test_read_github_repo_file_compatibility_alias(self) -> None:
+        with patch(
+            "tools.read_public_github_repo_file",
+            return_value="1: demo",
+        ):
+            result = read_github_repo_file_compat.__wrapped__(
+                "https://github.com/example/demo",
+                "README.md",
+            )
+
+        self.assertEqual("1: demo", result)
+        self.assertEqual("read_github_repoFile", read_github_repo_file_compat.name)
+
+    def test_read_public_github_repo_file_rejects_traversal(self) -> None:
+        with patch("tools._github_api_raw") as mock_raw:
+            result = read_public_github_repo_file(
+                "https://github.com/example/demo",
+                "../secret.txt",
+            )
+
+        self.assertIn("拒绝读取", result)
+        mock_raw.assert_not_called()
+
+    def test_read_public_github_repo_file_rejects_sensitive_file(self) -> None:
+        with patch("tools._github_api_raw") as mock_raw:
+            result = read_public_github_repo_file(
+                "https://github.com/example/demo",
+                ".env",
+            )
+
+        self.assertIn("敏感文件", result)
+        mock_raw.assert_not_called()
+
+    def test_remote_file_respects_central_blocklist(self) -> None:
+        (self.root / ".repopilotignore").write_text(
+            "private/\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools._github_api_raw") as mock_raw:
+            result = read_public_github_repo_file(
+                "https://github.com/example/demo",
+                "private/profile.txt",
+            )
+
+        self.assertIn("黑名单", result)
+        mock_raw.assert_not_called()
 
     def test_list_skips_sensitive_and_dependency_files(self) -> None:
         result = list_project_files.__wrapped__(str(self.root))

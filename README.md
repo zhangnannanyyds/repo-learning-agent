@@ -1,10 +1,10 @@
 # RepoPilot
 
-RepoPilot 是一个面向初学者的本地项目学习与报错诊断 Agent。用户选择一个本地项目后，可以用中文询问项目类型、目录结构、入口文件、运行方式和报错原因。
+RepoPilot 是一个面向初学者的只读项目学习与报错诊断 Agent。用户可以选择本地项目目录或公开 GitHub 仓库，并用中文询问项目类型、目录结构、入口文件、运行方式和报错原因。
 
-第一版坚持一个明确边界：**只读取和分析，不修改、删除或运行被分析的项目。**
+第二版坚持一个明确边界：**只读取和分析，不修改、删除、克隆或运行被分析的项目。**
 
-## 第一版功能
+## 第二版功能
 
 - 识别 Python、JavaScript/TypeScript、Maven、Gradle 和 HarmonyOS ArkTS 项目。
 - 列出项目文件，并跳过虚拟环境、依赖目录、构建目录和缓存目录。
@@ -18,6 +18,11 @@ RepoPilot 是一个面向初学者的本地项目学习与报错诊断 Agent。�
 - 支持在 RepoPilot 中集中配置隐私黑名单。
 - 支持 `files` 本地文件查询，API 限流时也可使用。
 - 支持 `check` 本地检查文件访问权限，不读取文件内容。
+- 支持输入公开 GitHub 仓库主页链接。
+- 读取公开仓库的名称、描述、主要语言、默认分支和更新时间。
+- 通过 GitHub 文件树查看仓库结构，并过滤敏感路径。
+- 按需读取公开仓库中的文本文件，返回真实行号。
+- 将 GitHub 文件内容视为不可信外部数据，不执行其中的指令。
 - 默认关闭 SDK tracing，避免后台追踪失败污染终端。
 - 对单次分析设置工具调用上限，避免无休止调用。
 
@@ -26,7 +31,7 @@ RepoPilot 是一个面向初学者的本地项目学习与报错诊断 Agent。�
 ```text
 repo-learning-agent/
 ├── main.py            # 终端程序与 Agent 配置
-├── tools.py           # 五个只读本地项目工具
+├── tools.py           # 本地项目与公开 GitHub 仓库只读工具
 ├── test_tools.py      # 不调用 OpenAI API 的离线测试
 ├── test_main.py       # 终端辅助逻辑的离线测试
 ├── requirements.txt  # Python 依赖
@@ -95,7 +100,7 @@ D:/GitHub/my-project/private/
 - 完整路径可以不加引号；误加一层单引号或双引号也能识别。
 - `private/` 表示整个目录及其子目录。
 - `*.log`、`*.json` 等支持通配符。
-- 相对规则会应用到每一个被分析的项目，例如 `private/` 会屏蔽所有项目根目录中的 `private` 目录。
+- 相对规则会应用到每一个本地或 GitHub 项目，例如 `private/` 会屏蔽所有项目中的 `private` 目录。
 - 完整路径只屏蔽指定项目中的文件，例如 `D:/GitHub/demo/private/user.json`。
 - `.repopilotignore` 本身不会提供给 Agent。
 - `.env`、私钥、凭据文件和内置忽略目录始终禁止访问。
@@ -108,10 +113,16 @@ D:/GitHub/my-project/private/
 python main.py
 ```
 
-启动后先输入本地项目目录，例如：
+启动后可以输入本地项目目录：
 
 ```text
 D:\GitHub\agent\_firstTry
+```
+
+也可以输入公开 GitHub 仓库主页链接：
+
+```text
+https://github.com/openai/openai-python
 ```
 
 然后可以提问：
@@ -124,12 +135,18 @@ D:\GitHub\agent\_firstTry
 请诊断 ModuleNotFoundError: No module named 'chromadb'，不要执行命令。
 ```
 
+分析 GitHub 仓库时可以提问：
+
+```text
+请根据仓库文件和 README，说明项目用途、技术栈、入口文件和候选运行方式。
+```
+
 ## 终端命令
 
 - `help`：显示帮助。
-- `project`：切换要分析的本地项目。
-- `files`：本地列出可见文件，不调用 API。
-- `files txt`：本地列出 `.txt` 文件，不调用 API。
+- `project`：切换本地项目或公开 GitHub 仓库。
+- `files`：列出当前目标中的可见文件，不调用 OpenAI API。
+- `files txt`：列出当前目标中的 `.txt` 文件，不调用 OpenAI API。
 - `check private/data.txt`：检查文件是否会被黑名单或内置规则阻止，不读取内容。
 - `policy`：显示黑名单文件位置和有效规则数量，不显示隐私规则。
 - `multi`：进入多行输入模式；粘贴完成后单独输入 `END`，整段只分析一次。
@@ -148,7 +165,7 @@ END
 
 ## 离线测试
 
-下面的测试只测试本地工具，不调用 OpenAI API，不消耗模型请求次数：
+下面的测试使用本地临时目录和模拟 GitHub 响应，不调用 OpenAI API，也不会真实访问 GitHub：
 
 ```powershell
 python -m unittest -v
@@ -156,11 +173,16 @@ python -m unittest -v
 
 测试会在系统临时目录建立示例项目，结束后自动清理，不会修改你的真实项目。
 
-## 第一版限制
+## 第二版限制
 
-- 只能分析本机目录，暂时不能直接读取 GitHub 仓库网址、Issue 或 Pull Request。
+- GitHub 功能只支持公开仓库主页链接，不支持私有仓库、Issue 或 Pull Request。
+- 不克隆仓库，只通过 GitHub REST API 获取文件树和按需读取文本文件。
+- 未配置 GitHub 身份验证时，公开 API 通常按来源 IP 限制为每小时 60 次请求。
+- 超大仓库的文件树可能被 GitHub 截断；RepoPilot 最多向 Agent 展示前 120 个可见文件。
+- 不提供远程仓库全文搜索，避免为大量文件发出请求并快速耗尽 GitHub 限额。
 - 普通自然语言问题需要调用 Agent；`files`、`check`、`policy`、`project`、`help` 和 `exit` 不调用 API。
+- GitHub 目标使用 `files` 时虽然不调用 OpenAI，但会访问 GitHub API。
 - 不保存跨进程的对话记录。
 - 不负责自动修复代码或执行命令。
 
-后续版本可以继续加入 GitHub 仓库接入、结构化诊断报告和经用户确认后的代码修改工作流。
+后续版本可以继续加入结构化诊断报告、私有仓库授权和经用户确认后的代码修改工作流。
