@@ -34,6 +34,18 @@ class MainTests(unittest.TestCase):
             target,
         )
 
+    def test_classify_markdown_github_repo_link(self) -> None:
+        target, error = classify_project_target(
+            "[https://github.com/openai/openai-python]"
+            "(https://github.com/openai/openai-python)"
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(
+            ("github", "https://github.com/openai/openai-python"),
+            target,
+        )
+
     def test_classify_local_project(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             target, error = classify_project_target(temporary_directory)
@@ -58,7 +70,7 @@ class MainTests(unittest.TestCase):
             "分析这个项目",
         )
 
-        self.assertIn("公开 GitHub 仓库", prompt)
+        self.assertIn("GitHub 仓库", prompt)
         self.assertIn("https://github.com/example/demo", prompt)
 
     def test_zhipu_glm45_disables_thinking_by_default(self) -> None:

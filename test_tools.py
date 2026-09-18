@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import tools
@@ -11,6 +12,7 @@ from tools import (
     check_project_path_access,
     get_blocklist_status,
     get_github_repo_info,
+    get_github_status,
     get_public_github_repo_info,
     get_run_candidates,
     list_github_repo_files,
@@ -117,6 +119,69 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result["full_name"], "openai/openai-python")
         self.assertEqual(result["language"], "Python")
 
+    def test_private_github_repo_is_blocked_by_default(self) -> None:
+        fake_payload = {
+            "full_name": "example/private-demo",
+            "default_branch": "main",
+            "private": True,
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"GITHUB_TOKEN": "test-token"},
+            clear=True,
+        ), patch("tools._github_api_json", return_value=(fake_payload, None)):
+            result = get_public_github_repo_info(
+                "https://github.com/example/private-demo"
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("默认拒绝", result["message"])
+
+    def test_private_github_repo_requires_explicit_opt_in(self) -> None:
+        fake_payload = {
+            "full_name": "example/private-demo",
+            "default_branch": "main",
+            "private": True,
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GITHUB_TOKEN": "test-token",
+                "REPOPILOT_ALLOW_PRIVATE_GITHUB": "1",
+            },
+            clear=True,
+        ), patch("tools._github_api_json", return_value=(fake_payload, None)):
+            result = get_public_github_repo_info(
+                "https://github.com/example/private-demo"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["private"])
+
+    def test_github_status_hides_token_and_shows_rate_limit(self) -> None:
+        fake_payload = {
+            "resources": {
+                "core": {
+                    "limit": 5_000,
+                    "remaining": 4_999,
+                    "reset": 1_789_683_600,
+                }
+            }
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"GITHUB_TOKEN": "secret-token"},
+            clear=True,
+        ), patch("tools._github_api_json", return_value=(fake_payload, None)):
+            result = get_github_status()
+
+        self.assertIn("GitHub Token：已配置", result)
+        self.assertIn("剩余 4999/5000", result)
+        self.assertNotIn("secret-token", result)
+
     def test_github_request_uses_optional_token(self) -> None:
         with patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}):
             request = tools._github_request(
@@ -126,6 +191,13 @@ class ToolTests(unittest.TestCase):
 
         self.assertEqual("Bearer test-token", request.get_header("Authorization"))
         self.assertEqual("2022-11-28", request.get_header("X-github-api-version"))
+
+    def test_github_forbidden_without_headers_does_not_crash(self) -> None:
+        error = SimpleNamespace(code=403, headers=None)
+
+        result = tools._github_error_message(error)
+
+        self.assertIn("GitHub 拒绝了请求", result)
 
     def test_get_github_repo_info_formats_result(self) -> None:
         fake_result = {
@@ -224,7 +296,17 @@ class ToolTests(unittest.TestCase):
         self.assertIn("README.md", result)
 
     def test_read_public_github_repo_file_returns_line_numbers(self) -> None:
+        fake_info = {
+            "ok": True,
+            "owner": "example",
+            "repo": "demo",
+            "private": False,
+        }
+
         with patch(
+            "tools.get_public_github_repo_info",
+            return_value=fake_info,
+        ), patch(
             "tools._github_api_raw",
             return_value=(b"first line\nsecond line\n", None),
         ):
@@ -280,6 +362,24 @@ class ToolTests(unittest.TestCase):
             )
 
         self.assertIn("敏感文件", result)
+        mock_raw.assert_not_called()
+
+    def test_read_private_github_file_respects_default_denial(self) -> None:
+        denied_info = {
+            "ok": False,
+            "message": "该仓库是私有仓库。RepoPilot 默认拒绝读取。",
+        }
+
+        with patch(
+            "tools.get_public_github_repo_info",
+            return_value=denied_info,
+        ), patch("tools._github_api_raw") as mock_raw:
+            result = read_public_github_repo_file(
+                "https://github.com/example/private-demo",
+                "README.md",
+            )
+
+        self.assertIn("默认拒绝", result)
         mock_raw.assert_not_called()
 
     def test_remote_file_respects_central_blocklist(self) -> None:

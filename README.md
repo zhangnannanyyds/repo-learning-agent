@@ -1,10 +1,10 @@
 # RepoPilot
 
-RepoPilot 是一个面向初学者的只读项目学习与报错诊断 Agent。用户可以选择本地项目目录或公开 GitHub 仓库，并用中文询问项目类型、目录结构、入口文件、运行方式和报错原因。
+RepoPilot 是一个面向初学者的只读项目学习与报错诊断 Agent。用户可以选择本地项目目录或获准访问的 GitHub 仓库，并用中文询问项目类型、目录结构、入口文件、运行方式和报错原因。
 
-第二版坚持一个明确边界：**只读取和分析，不修改、删除、克隆或运行被分析的项目。**
+第三版坚持一个明确边界：**只读取和分析，不修改、删除、克隆或运行被分析的项目。**
 
-## 第二版功能
+## 第三版功能
 
 - 识别 Python、JavaScript/TypeScript、Maven、Gradle 和 HarmonyOS ArkTS 项目。
 - 列出项目文件，并跳过虚拟环境、依赖目录、构建目录和缓存目录。
@@ -19,21 +19,28 @@ RepoPilot 是一个面向初学者的只读项目学习与报错诊断 Agent。�
 - 支持 `files` 本地文件查询，API 限流时也可使用。
 - 支持 `check` 本地检查文件访问权限，不读取文件内容。
 - 支持输入公开 GitHub 仓库主页链接。
+- 支持使用 `GITHUB_TOKEN` 登录 GitHub，提高 API 额度。
+- 可通过显式开关只读分析令牌获准访问的私有仓库，默认关闭。
+- 使用 `github` 查看登录状态、私有仓库开关和 REST API 剩余额度。
 - 读取公开仓库的名称、描述、主要语言、默认分支和更新时间。
 - 通过 GitHub 文件树查看仓库结构，并过滤敏感路径。
 - 按需读取公开仓库中的文本文件，返回真实行号。
 - 将 GitHub 文件内容视为不可信外部数据，不执行其中的指令。
 - 默认关闭 SDK tracing，避免后台追踪失败污染终端。
 - 对单次分析设置工具调用上限，避免无休止调用。
+- 使用 `history` 查看当前运行期间的成功分析记录，不自动写入磁盘。
+- 使用 `report` 将最近一次成功分析显式导出为 Markdown 报告。
 
 ## 项目结构
 
 ```text
 repo-learning-agent/
 ├── main.py            # 终端程序与 Agent 配置
-├── tools.py           # 本地项目与公开 GitHub 仓库只读工具
-├── test_tools.py      # 不调用 OpenAI API 的离线测试
+├── tools.py           # 本地项目与 GitHub 仓库只读工具
+├── reporting.py       # 会话内历史与显式报告导出
+├── test_tools.py      # 不调用模型 API 的离线测试
 ├── test_main.py       # 终端辅助逻辑的离线测试
+├── test_reporting.py  # 历史与报告功能的离线测试
 ├── requirements.txt  # Python 依赖
 ├── .gitignore         # Git 忽略规则
 └── README.md          # 使用说明
@@ -50,10 +57,10 @@ py -3.14 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-确认当前终端可以读取 API Key：
+确认当前终端可以读取智谱 API Key：
 
 ```powershell
-if ($env:OPENAI_API_KEY) { "API Key 已设置" } else { "API Key 未设置" }
+if ($env:ZHIPU_API_KEY) { "智谱 API Key 已设置" } else { "智谱 API Key 未设置" }
 ```
 
 不要把 API Key 写进代码、README 或提交到 GitHub。
@@ -119,7 +126,7 @@ python main.py
 D:\GitHub\agent\_firstTry
 ```
 
-也可以输入公开 GitHub 仓库主页链接：
+也可以输入 GitHub 仓库主页链接：
 
 ```text
 https://github.com/openai/openai-python
@@ -144,11 +151,15 @@ https://github.com/openai/openai-python
 ## 终端命令
 
 - `help`：显示帮助。
-- `project`：切换本地项目或公开 GitHub 仓库。
-- `files`：列出当前目标中的可见文件，不调用 OpenAI API。
-- `files txt`：列出当前目标中的 `.txt` 文件，不调用 OpenAI API。
+- `project`：切换本地项目或 GitHub 仓库。
+- `files`：列出当前目标中的可见文件，不调用模型 API。
+- `files txt`：列出当前目标中的 `.txt` 文件，不调用模型 API。
 - `check private/data.txt`：检查文件是否会被黑名单或内置规则阻止，不读取内容。
 - `policy`：显示黑名单文件位置和有效规则数量，不显示隐私规则。
+- `github`：显示 GitHub Token、私有仓库开关和 REST API 额度状态，不显示令牌。
+- `history`：显示当前运行期间最近 20 条成功分析记录。
+- `history clear`：清空内存中的分析记录。
+- `report`：把最近一次成功分析导出到本地 `reports/`，不会自动上传 GitHub。
 - `multi`：进入多行输入模式；粘贴完成后单独输入 `END`，整段只分析一次。
 - `exit`：退出程序。
 
@@ -165,7 +176,7 @@ END
 
 ## 离线测试
 
-下面的测试使用本地临时目录和模拟 GitHub 响应，不调用 OpenAI API，也不会真实访问 GitHub：
+下面的测试使用本地临时目录和模拟 GitHub 响应，不调用模型 API，也不会真实访问 GitHub：
 
 ```powershell
 python -m unittest -v
@@ -173,16 +184,39 @@ python -m unittest -v
 
 测试会在系统临时目录建立示例项目，结束后自动清理，不会修改你的真实项目。
 
-## 第二版限制
+## GitHub 登录与私有仓库
 
-- GitHub 功能只支持公开仓库主页链接，不支持私有仓库、Issue 或 Pull Request。
+公开仓库建议设置 GitHub Token，避免共享 IP 的匿名访问额度过低：
+
+```powershell
+$env:GITHUB_TOKEN="你的细粒度 GitHub Token"
+```
+
+令牌只保存在当前终端环境中，不要写入代码、README 或 `.env` 后上传。公开仓库无需写权限。
+
+私有仓库默认拒绝读取。只有在令牌已经具备目标仓库只读权限，并且你明确接受把按需读取的代码片段发送给智谱模型时，才设置：
+
+```powershell
+$env:REPOPILOT_ALLOW_PRIVATE_GITHUB="1"
+```
+
+关闭私有仓库访问：
+
+```powershell
+Remove-Item Env:REPOPILOT_ALLOW_PRIVATE_GITHUB -ErrorAction SilentlyContinue
+```
+
+## 第三版限制
+
+- GitHub 功能支持公开仓库，以及显式授权的只读私有仓库；不支持 Issue 或 Pull Request。
 - 不克隆仓库，只通过 GitHub REST API 获取文件树和按需读取文本文件。
 - 未配置 GitHub 身份验证时，公开 API 通常按来源 IP 限制为每小时 60 次请求。
 - 超大仓库的文件树可能被 GitHub 截断；RepoPilot 最多向 Agent 展示前 120 个可见文件。
 - 不提供远程仓库全文搜索，避免为大量文件发出请求并快速耗尽 GitHub 限额。
 - 普通自然语言问题需要调用 Agent；`files`、`check`、`policy`、`project`、`help` 和 `exit` 不调用 API。
-- GitHub 目标使用 `files` 时虽然不调用 OpenAI，但会访问 GitHub API。
-- 不保存跨进程的对话记录。
+- GitHub 目标使用 `files` 时虽然不调用模型 API，但会访问 GitHub API。
+- 历史记录只保存在当前进程内；退出程序后自动消失。
+- `report` 会把用户明确要求导出的内容写入本地 `reports/`，该目录默认不上传 GitHub。
 - 不负责自动修复代码或执行命令。
 
-后续版本可以继续加入结构化诊断报告、私有仓库授权和经用户确认后的代码修改工作流。
+后续版本可以继续加入多项目比较和经用户确认后的代码修改工作流。
